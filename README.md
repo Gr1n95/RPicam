@@ -107,10 +107,12 @@ sudo dnf install -y python3.12
 PYTHON=python3.12 ./setup_linux.sh
 ```
 
-Это, кстати, не только про надёжность: для Python 3.14 у PyTorch пока нет
-CUDA-сборок (ставится CPU-вариант), а `insightface` на 3.14 собирается из
-исходников. На 3.11–3.12 весь стек (torch, onnxruntime, insightface, PyQt5)
-ставится готовыми колесами.
+Это, кстати, не только про надёжность. Сам по себе Python 3.14 GPU **не**
+блокирует: CUDA-сборки PyTorch под cp314 есть, а начиная с torch 2.11 колёса на
+PyPI для Linux x86_64 по умолчанию содержат CUDA 13.0. Но на 3.11–3.12 стек
+(torch, onnxruntime, insightface, PyQt5) гарантированно ставится готовыми
+колесами, тогда как на 3.14 часть пакетов (в первую очередь `insightface`)
+может собираться из исходников и требовать gcc, cython и python3-devel.
 
 **4. Системным Python пользуется сама Fedora.**
 Если перезаписать там numpy/Qt/что-нибудь ещё, поломаться могут системные
@@ -213,3 +215,69 @@ v4l2-ctl --list-devices        # пакет: sudo dnf install v4l-utils
 ```
 
 Номера камер входа/выхода задаются в интерфейсе перед запуском.
+
+---
+
+## CPU или GPU
+
+В приложении два независимых inference-движка, и переключаются они по-разному.
+CUDA работает только с видеокартами NVIDIA; на AMD/Intel/без дискретной карты
+всё в любом случае считается на процессоре.
+
+### Детекция лиц (YOLO) — PyTorch
+
+Устройство выбирает ultralytics автоматически: если CUDA доступна, модель
+уедет на GPU, менять в коде ничего не нужно. Проверка:
+
+```bash
+nvidia-smi        # есть ли драйвер NVIDIA и какую CUDA он поддерживает
+
+python - <<'EOF'
+import torch
+print(torch.__version__, "| cuda:", torch.version.cuda,
+      "| доступна:", torch.cuda.is_available())
+EOF
+```
+
+| Что видно | Что это значит |
+|---|---|
+| `2.14.0` и `cuda: 13.0`, `доступна: True` | GPU работает |
+| `...+cpu` или `cuda: None` | установилась CPU-сборка torch |
+| версия CUDA есть, но `доступна: False` | драйвер старше, чем нужно для этой CUDA (требуемую ветку видно в `nvidia-smi`), либо карты NVIDIA нет |
+
+CPU-сборку можно заменить на GPU-сборку нужной версии CUDA:
+
+```bash
+pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+### Распознавание лиц (InsightFace/ArcFace) — ONNX Runtime
+
+**По умолчанию жёстко на CPU**, независимо от того, что там с torch. В
+`recognition.py`:
+
+```python
+RECOGNITION_CTX_ID = -1   # 0 = GPU (CUDA), -1 = CPU
+```
+
+Провайдеры перечислены как `['CUDAExecutionProvider', 'CPUExecutionProvider']`,
+но `ctx_id=-1` всё равно уводит InsightFace на процессор. Чтобы включить GPU:
+
+```bash
+# 1. заменить onnxruntime на GPU-сборку (модуль один и тот же, оба сразу нельзя)
+pip uninstall -y onnxruntime
+pip install onnxruntime-gpu
+
+# 2. поставить CUDA и cuDNN версии, которую ждёт ваш onnxruntime-gpu
+#    (таблица совместимости — в документации ONNX Runtime)
+
+# 3. проверить, что провайдер появился
+python -c "import onnxruntime as ort; print(ort.__version__, ort.get_available_providers())"
+```
+
+Если в выводе нет `CUDAExecutionProvider` — стоит обычный `onnxruntime`, либо
+не найдены библиотеки CUDA/cuDNN. После этого в `recognition.py` нужно поменять
+`RECOGNITION_CTX_ID` на `0`.
+
+ArcFace вызывается на каждое лицо в кадре, поэтому выигрыш от GPU здесь обычно
+заметнее, чем на детекции.
