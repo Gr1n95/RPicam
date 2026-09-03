@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Артефакты работы приложения (создаются автоматически)
+face_db.pkl
+attendance.db
+*.csv
+
+# Модели и данные персонала — большие бинарники, в git их не кладём
+best.pt
+known_faces/
+
+# ОС / редакторы
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

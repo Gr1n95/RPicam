@@ -1,0 +1,28 @@
+# Linux (Fedora / Ubuntu / Debian / Arch …).
+#
+# Ключевое отличие от requirements.txt — OpenCV БЕЗ Qt.
+# Обычный opencv-python кладёт в site-packages/cv2/qt/ свою копию Qt5 и при
+# `import cv2` подменяет QT_QPA_PLATFORM_PLUGIN_PATH на неё. В процессе
+# оказываются две Qt5, и PyQt5 падает:
+#
+#   qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in
+#       ".../site-packages/cv2/qt/plugins" even though it was found.
+#
+# GUI от OpenCV приложению не нужен (cv2.imshow/namedWindow не используются),
+# поэтому headless-сборка — полная замена.
+#
+# Установка (правильный порядок, см. также setup_linux.sh):
+#
+#   pip install -r requirements-base.txt
+#   pip uninstall -y opencv-python opencv-contrib-python
+#   pip install --no-deps opencv-python-headless
+#
+# `--no-deps` обязателен: ultralytics и supervision объявляют зависимость от
+# opencv-python и иначе pip затянет его обратно.
+#
+# Если headless ставить не хочется — qt_compat.py нейтрализует конфликт
+# и с обычным opencv-python (main.py вызывает его до и после `import cv2`).
+
+-r requirements-base.txt
+
+opencv-python-headless>=4.8

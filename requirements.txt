@@ -1,0 +1,6 @@
+# Windows (и любой случай, когда нужен cv2 с GUI: imshow / namedWindow).
+# На Windows opencv-python не возит с собой Qt, конфликтов нет.
+
+-r requirements-base.txt
+
+opencv-python>=4.8

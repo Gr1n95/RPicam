@@ -9,17 +9,30 @@
   • Просмотр журнала, фильтр по дате, экспорт в CSV.
 
 Запуск:  python main.py
-Зависимости:  pip install PyQt5 opencv-python numpy ultralytics supervision insightface onnxruntime
+Зависимости:  pip install -r requirements.txt          (Windows)
+              pip install -r requirements-linux.txt    (Linux, OpenCV без Qt)
+
+Linux: пакет opencv-python тащит собственную копию Qt5 и конфликтует с PyQt5
+       («Could not load the Qt platform plugin "xcb" in .../cv2/qt/plugins»).
+       Модуль qt_compat.py это обходит; подробности и диагностика — в README.md.
 """
 import os
 import sys
 import time
 import shutil
 
+# Linux: ДО импорта cv2 загружаем Qt из PyQt5 и фиксируем пути к её плагинам.
+# Иначе opencv-python подтянет свою копию Qt5, подменит QT_QPA_PLATFORM_PLUGIN_PATH
+# на .../site-packages/cv2/qt/plugins — и PyQt5 не сможет инициализировать xcb.
+# На Windows qt_compat ничего не делает, порядок импортов ниже сохраняется.
+import qt_compat
+qt_compat.preload_qt()
+
 # ВАЖНО (Windows): supervision нужно импортировать ДО PyQt5,
 # иначе возможен конфликт DLL (OSError WinError 1114 при загрузке c10.dll).
 # Поэтому recognition (тянет torch) импортируется первым.
 import cv2
+qt_compat.restore_qt_paths()   # cv2 только что подставил свои пути Qt — отменяем
 import numpy as np
 import supervision as sv
 
@@ -533,6 +546,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
 # ════════════════════════════════════════════════════════════════
 def main():
+    # страховка: к этому моменту окружение могло быть испорчено cv2/торчем —
+    # возвращаем пути к плагинам PyQt5 ещё раз (вызов идемпотентный).
+    qt_compat.restore_qt_paths()
     app = QtWidgets.QApplication(sys.argv)
 
     # Сплэш с прогрессом загрузки тяжёлых моделей
