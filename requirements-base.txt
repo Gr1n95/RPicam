@@ -8,3 +8,14 @@ supervision>=0.19
 insightface>=0.7.3
 onnxruntime>=1.17
 Pillow>=9.5
+
+# scikit-image приходит транзитивно через insightface. InsightFace до сих пор
+# вызывает skimage.transform.SimilarityTransform.estimate()
+# (insightface/utils/face_align.py:23), который:
+#   • в scikit-image 0.26 помечен как устаревший — FutureWarning на каждое
+#     распознанное лицо; глушится точечным фильтром в recognition.py;
+#   • в scikit-image 2.2 будет УДАЛЁН — вот там insightface сломается всерьёз.
+# Ограничение <2.2 сегодня ничего не стоит (0.26 ему удовлетворяет, понижения
+# версии не требуется), но не даст поставить ломающую сборку.
+# Снять его можно, когда insightface перейдёт на from_estimate().
+scikit-image<2.2

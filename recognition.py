@@ -4,12 +4,27 @@
 """
 import os
 import pickle
+import warnings
 import numpy as np
 
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 from insightface.app import FaceAnalysis
+
+# insightface до сих пор вызывает skimage.transform.SimilarityTransform.estimate()
+# (insightface/utils/face_align.py), который в scikit-image 0.26 помечен как
+# устаревший. Предупреждение печатается на каждое распознанное лицо и засоряет
+# лог, хотя ни наша ошибка, ни ошибка insightface это не является.
+# Глушим точечно — только FutureWarning из этого модуля и только с этим текстом.
+# Полностью проблема уйдёт, когда insightface перейдёт на SimilarityTransform
+# .from_estimate(); тогда фильтр можно удалить.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`estimate` is deprecated",
+    category=FutureWarning,
+    module=r"insightface\.utils\.face_align",
+)
 
 # ─── Настройки распознавания ───────────────────────────────────
 # Базовая папка = папка, где лежит этот файл. Все пути строим от неё,
@@ -23,6 +38,51 @@ FACE_DB_PATH = os.path.join(BASE_DIR, "face_db.pkl")     # кэш эмбедди
 SIMILARITY_THRESHOLD = 0.45         # порог косинусного сходства (0..1)
 RECOGNITION_CTX_ID = -1             # 0 = GPU (CUDA), -1 = CPU
 CROP_PADDING = 0.25                 # запас при вырезании лица (доля от bbox)
+
+
+def resolve_onnx_runtime(ctx_id: int = RECOGNITION_CTX_ID):
+    """
+    Выбирает Execution Providers для ONNX Runtime — только реально доступные.
+
+    InsightFace передаёт список providers в onnxruntime.InferenceSession как
+    есть. Если попросить CUDAExecutionProvider, а установлен обычный
+    onnxruntime (без CUDA), ORT печатает предупреждение и сам откатывается
+    на CPU:
+
+        UserWarning: Specified provider 'CUDAExecutionProvider' is not in
+        available provider names. Available providers:
+        'AzureExecutionProvider, CPUExecutionProvider'
+
+    Поэтому сначала спрашиваем у ORT, что он умеет, и просим только это.
+
+    Возвращает (providers, effective_ctx_id). Если GPU запрошен, но недоступен,
+    effective_ctx_id понижается до -1, чтобы InsightFace не пытался
+    инициализировать CUDA тем ctx_id, который мы всё равно не используем.
+    """
+    cpu, cuda = "CPUExecutionProvider", "CUDAExecutionProvider"
+
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+    except Exception as exc:
+        print(f"[WARN] onnxruntime не отвечает ({exc}) — работаю на CPU.")
+        return [cpu], -1
+
+    if ctx_id < 0:
+        # CPU-режим: CUDA не запрашиваем вовсе — иначе ORT и печатает тот самый
+        # UserWarning, хотя на поведение он не влияет.
+        return [cpu], -1
+
+    if cuda in available:
+        return [cuda, cpu], ctx_id
+
+    print(f"[WARN] Запрошен GPU (RECOGNITION_CTX_ID={ctx_id}), но установленный "
+          f"onnxruntime CUDAExecutionProvider не содержит.")
+    print(f"       Доступные провайдеры: {', '.join(available) or '(нет)'}")
+    print("       Для GPU нужны видеокарта NVIDIA и пакет onnxruntime-gpu:")
+    print("         pip uninstall -y onnxruntime && pip install onnxruntime-gpu")
+    print("       Продолжаю на CPU.")
+    return [cpu], -1
 
 
 def load_model(path: str = MODEL_PATH) -> YOLO:
@@ -40,13 +100,16 @@ class FaceRecognizer:
 
     def __init__(self, ctx_id: int = RECOGNITION_CTX_ID):
         print("[INFO] Загрузка модели распознавания (InsightFace buffalo_l)...")
+        providers, ctx_id = resolve_onnx_runtime(ctx_id)
         self.app = FaceAnalysis(
             name="buffalo_l",
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+            providers=providers,
             allowed_modules=['detection', 'recognition']
         )
         self.app.prepare(ctx_id=ctx_id, det_size=(320, 320))
-        print("[OK] Модель распознавания загружена.")
+        self.providers = providers
+        print(f"[OK] Модель распознавания загружена "
+              f"(провайдеры: {', '.join(providers)}).")
 
     def embed(self, face_image: np.ndarray):
         """Возвращает нормализованный эмбеддинг для изображения с лицом, иначе None."""

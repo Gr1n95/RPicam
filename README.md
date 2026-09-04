@@ -186,6 +186,14 @@ QT_DEBUG_PLUGINS=1 python main.py      # подробный лог загруз�
 RPICAM_QT_DEBUG=1 python main.py       # лог самого qt_compat
 ```
 
+Косметические предупреждения, которые специально погашены и не являются ошибкой:
+
+| Сообщение | Статус |
+|---|---|
+| `Warning: Ignoring XDG_SESSION_TYPE=wayland on Gnome` | безвредно, Qt5 рисует через XWayland |
+| `model ignore: ... landmark_3d_68 / 2d106det / genderage` | так задумано: `allowed_modules=['detection','recognition']` отсекает лишние модели buffalo_l |
+| `FutureWarning: estimate is deprecated since version 0.26` | глушится точечным фильтром в `recognition.py` (insightface вызывает устаревший метод scikit-image) |
+
 `python qt_compat.py` прогоняет `ldd` по `libqxcb.so` и печатает готовые команды
 `dnf`/`apt` для недостающих библиотек.
 
@@ -253,15 +261,36 @@ pip install --force-reinstall torch --index-url https://download.pytorch.org/whl
 
 ### Распознавание лиц (InsightFace/ArcFace) — ONNX Runtime
 
-**По умолчанию жёстко на CPU**, независимо от того, что там с torch. В
+**По умолчанию на CPU**, независимо от того, что там с torch. В
 `recognition.py`:
 
 ```python
 RECOGNITION_CTX_ID = -1   # 0 = GPU (CUDA), -1 = CPU
 ```
 
-Провайдеры перечислены как `['CUDAExecutionProvider', 'CPUExecutionProvider']`,
-но `ctx_id=-1` всё равно уводит InsightFace на процессор. Чтобы включить GPU:
+Список Execution Providers собирается функцией `resolve_onnx_runtime()`: она
+спрашивает у `onnxruntime.get_available_providers()`, что реально доступно, и
+просит только это. Поэтому предупреждения
+
+```
+UserWarning: Specified provider 'CUDAExecutionProvider' is not in available
+provider names. Available providers: 'AzureExecutionProvider, CPUExecutionProvider'
+```
+
+больше нет — CUDA не запрашивается, если её в установленном `onnxruntime` нет.
+
+Если выставить `RECOGNITION_CTX_ID = 0`, а CUDA-провайдера нет, программа не
+будет молча откатываться на CPU — она напечатает понятное сообщение:
+
+```
+[WARN] Запрошен GPU (RECOGNITION_CTX_ID=0), но установленный onnxruntime
+       CUDAExecutionProvider не содержит.
+       Доступные провайдеры: AzureExecutionProvider, CPUExecutionProvider
+       Для GPU нужны видеокарта NVIDIA и пакет onnxruntime-gpu: ...
+       Продолжаю на CPU.
+```
+
+Чтобы включить GPU по-настоящему:
 
 ```bash
 # 1. заменить onnxruntime на GPU-сборку (модуль один и тот же, оба сразу нельзя)
@@ -278,6 +307,11 @@ python -c "import onnxruntime as ort; print(ort.__version__, ort.get_available_p
 Если в выводе нет `CUDAExecutionProvider` — стоит обычный `onnxruntime`, либо
 не найдены библиотеки CUDA/cuDNN. После этого в `recognition.py` нужно поменять
 `RECOGNITION_CTX_ID` на `0`.
+
+> На AMD/Intel CUDA нет в принципе, поэтому `onnxruntime-gpu` там не поможет —
+> распознавание остаётся на CPU. Для Intel теоретически возможен
+> `OpenVINOExecutionProvider`, для AMD — `ROCmExecutionProvider`, но InsightFace
+> их сам не выберет: `resolve_onnx_runtime()` знает только про CUDA и CPU.
 
 ArcFace вызывается на каждое лицо в кадре, поэтому выигрыш от GPU здесь обычно
 заметнее, чем на детекции.
