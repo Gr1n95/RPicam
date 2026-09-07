@@ -242,6 +242,10 @@ class AddStaffDialog(QtWidgets.QDialog):
         self.accept()
 
 
+# Надпись на месте видео, когда камера не запущена (или уже остановлена).
+VIDEO_OFF_TEXT = "Выключена"
+
+
 #  Главное окно
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, model, recognizer, face_db, att_db):
@@ -253,6 +257,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # два независимых потока: вход и выход
         self.thread_in = None
         self.thread_out = None
+        # Рисуем ли мы сейчас видео. Снимается ДО остановки потоков: сигнал
+        # frame_ready приходит через очередь событий, и кадры, отправленные
+        # потоком до остановки, долетают до главного потока уже ПОСЛЕ сброса
+        # картинки — без этого флага последний кадр рисовался бы заново и
+        # оставался «замороженным» на месте.
+        self._streaming = False
 
         self.setWindowTitle("Система учёта посещаемости по лицам (2 камеры)")
         self.resize(1100, 900)
@@ -277,7 +287,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cap_in.setAlignment(QtCore.Qt.AlignCenter)
         cap_in.setStyleSheet("font-weight:bold; color:#1a8a1a;")
         in_box.addWidget(cap_in)
-        self.video_in = QtWidgets.QLabel("Выключена")
+        self.video_in = QtWidgets.QLabel()
         self.video_in.setAlignment(QtCore.Qt.AlignCenter)
         self.video_in.setMinimumSize(360, 200)
         self.video_in.setStyleSheet("background:#162016; color:#7a7; border-radius:6px;")
@@ -290,7 +300,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cap_out.setAlignment(QtCore.Qt.AlignCenter)
         cap_out.setStyleSheet("font-weight:bold; color:#b22;")
         out_box.addWidget(cap_out)
-        self.video_out = QtWidgets.QLabel("Выключена")
+        self.video_out = QtWidgets.QLabel()
         self.video_out.setAlignment(QtCore.Qt.AlignCenter)
         self.video_out.setMinimumSize(360, 200)
         self.video_out.setStyleSheet("background:#201616; color:#a77; border-radius:6px;")
@@ -407,6 +417,46 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_log()
         self.refresh_staff()
 
+    # ── Состояние «камеры выключены» ──
+    def _reset_video_label(self, label):
+        """
+        Возвращает QLabel с видео в исходное состояние — ровно то, которое
+        было до первого запуска камер.
+
+        Порядок важен. QLabel хранит признак того, что рисовать — текст или
+        картинку, и setPixmap() переключает его в режим картинки даже для
+        пустого QPixmap. Поэтому пара
+
+            label.setText("Выключена")
+            label.setPixmap(QtGui.QPixmap())
+
+        оставляет пустой прямоугольник вместо надписи: setText() теряется.
+        clear() снимает содержимое и возвращает режим текста, после чего
+        setText() уже работает как надо.
+        """
+        label.clear()
+        label.setText(VIDEO_OFF_TEXT)
+
+    def _reset_video_labels(self):
+        """Сбросить оба окна видео в исходное состояние."""
+        self._reset_video_label(self.video_in)
+        self._reset_video_label(self.video_out)
+
+    def _on_video_thread_finished(self, direction):
+        """
+        Поток камеры завершился САМ — потеря сигнала, камера не открылась,
+        отвалился USB. Картинка при этом залипает на последнем кадре точно так
+        же, как при остановке вручную, поэтому приводим окно видео в исходное
+        состояние.
+
+        При остановке кнопкой «Стоп» этот обработчик ничего не делает:
+        stop_cameras() снимает _streaming ДО остановки потоков, и сброс
+        выполняется там один раз для обоих окон.
+        """
+        if not self._streaming:
+            return
+        self._reset_video_label(self.video_in if direction == "IN" else self.video_out)
+
     # ── Камеры ──
     def start_cameras(self):
         cam_in = self.cam_in_spin.value()
@@ -424,6 +474,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.thread_in.frame_ready.connect(self.update_frame)
             self.thread_in.event_logged.connect(self.on_event)
             self.thread_in.status.connect(lambda m: self.statusBar().showMessage(m))
+            self.thread_in.finished.connect(
+                lambda d="IN": self._on_video_thread_finished(d))
             self.thread_in.start()
 
         if not (self.thread_out and self.thread_out.isRunning()):
@@ -433,22 +485,33 @@ class MainWindow(QtWidgets.QMainWindow):
             self.thread_out.frame_ready.connect(self.update_frame)
             self.thread_out.event_logged.connect(self.on_event)
             self.thread_out.status.connect(lambda m: self.statusBar().showMessage(m))
+            self.thread_out.finished.connect(
+                lambda d="OUT": self._on_video_thread_finished(d))
             self.thread_out.start()
 
+        self._streaming = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.cam_in_spin.setEnabled(False)
         self.cam_out_spin.setEnabled(False)
 
     def stop_cameras(self):
+        # СНАЧАЛА запрещаем рисовать кадры, потом останавливаем потоки.
+        # Иначе кадры, уже лежащие в очереди событий главного потока,
+        # перерисуют видео поверх сброшенной картинки.
+        self._streaming = False
+
         for t in (self.thread_in, self.thread_out):
             if t:
                 t.stop()
         self.thread_in = None
         self.thread_out = None
-        for lbl, txt in ((self.video_in, "Выключена"), (self.video_out, "Выключена")):
-            lbl.setText(txt)
-            lbl.setPixmap(QtGui.QPixmap())
+
+        # Картинка не «застывает» на последнем кадре — окна видео возвращаются
+        # в исходное состояние с надписью «Выключена».
+        self._reset_video_labels()
+
+        self.statusBar().showMessage("Камеры остановлены")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.cam_in_spin.setEnabled(True)
@@ -456,6 +519,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(str, np.ndarray)
     def update_frame(self, direction, frame):
+        # Кадр мог прилететь из очереди уже после остановки камер — не рисуем,
+        # чтобы не перекрыть сброшенное состояние.
+        if not self._streaming:
+            return
         label = self.video_in if direction == "IN" else self.video_out
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
