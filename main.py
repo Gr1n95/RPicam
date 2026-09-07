@@ -246,6 +246,18 @@ class AddStaffDialog(QtWidgets.QDialog):
 VIDEO_OFF_TEXT = "Выключена"
 
 
+def _centered_item(text):
+    """
+    Ячейка таблицы с текстом по центру — и по горизонтали, и по вертикали.
+
+    QTableWidgetItem по умолчанию выравнивает текст влево (AlignLeft|AlignVCenter),
+    поэтому для журнала и персонала выравнивание задаём явно.
+    """
+    item = QtWidgets.QTableWidgetItem(str(text))
+    item.setTextAlignment(QtCore.Qt.AlignCenter)
+    return item
+
+
 #  Главное окно
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, model, recognizer, face_db, att_db):
@@ -552,7 +564,7 @@ class MainWindow(QtWidgets.QMainWindow):
             values = [row["full_name"] or row["person_id"], direction,
                       row["timestamp"].replace("T", " "), sim]
             for c, v in enumerate(values):
-                self.log_table.setItem(r, c, QtWidgets.QTableWidgetItem(str(v)))
+                self.log_table.setItem(r, c, _centered_item(v))
 
     def export_csv(self):
         date_filter = (self.date_edit.date().toString("yyyy-MM-dd")
@@ -572,7 +584,7 @@ class MainWindow(QtWidgets.QMainWindow):
             status = "В помещении" if s["person_id"] in inside else "Снаружи"
             values = [s["person_id"], s["full_name"], s["position"] or "", status]
             for c, v in enumerate(values):
-                item = QtWidgets.QTableWidgetItem(str(v))
+                item = _centered_item(v)
                 if c == 3:
                     item.setForeground(QtGui.QColor("#1a8a1a") if s["person_id"] in inside
                                        else QtGui.QColor("#888"))
